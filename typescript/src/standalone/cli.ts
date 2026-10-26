@@ -10,6 +10,7 @@ import { createPomerado } from "./pomerado.js";
 import type { PomeradoOptions } from "./contracts.js";
 import { RunOutcomeFailure } from "./run-report.js";
 import { makeTerminalAsker } from "../inputs/terminal.js";
+import { modelProvidersFromEnv } from "../models/chatgpt-subscription.js";
 
 const usage = `Pomerado
 
@@ -22,7 +23,8 @@ Options
   --effect read|write|ask  Mint authority (default ask)
   --timeout-seconds N      Session budget (default 1200)
 
-Set OPENAI_API_KEY before minting. A run makes no model request and needs no key.
+Set OPENAI_API_KEY before minting, or set POMERADO_MODEL_TRANSPORT=chatgpt-subscription to
+use your ChatGPT login from the Codex CLI. A run makes no model request and needs no key.
 A run ignores --intent and --effect. Questions are asked in this terminal.
 `;
 
@@ -193,4 +195,11 @@ const isEntrypoint = (path: string | undefined) => {
   }
 };
 
-if (isEntrypoint(process.argv[1])) startCli();
+if (isEntrypoint(process.argv[1])) {
+  try {
+    startCli(process.argv.slice(2), modelProvidersFromEnv());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "Pomerado failed."}\n`);
+    process.exitCode = 1;
+  }
+}

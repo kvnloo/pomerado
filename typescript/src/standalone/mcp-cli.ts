@@ -10,6 +10,7 @@ import { readIntegration } from "./artifact-files.js";
 import { prepareIntegration } from "./mcp-package.js";
 import { makeIntegrationMcp, makePomeradoMcp } from "./mcp-server.js";
 import type { PomeradoOptions } from "./contracts.js";
+import { modelProvidersFromEnv } from "../models/chatgpt-subscription.js";
 
 const usage = `Pomerado MCP
 
@@ -21,7 +22,7 @@ Options
   --headed           Show local Chromium
 
 The mint root defaults to ./integrations. Supply model credentials in the environment to
-mint. Serving makes no model request and needs no model credentials.
+mint: OPENAI_API_KEY, or POMERADO_MODEL_TRANSPORT=chatgpt-subscription for your ChatGPT login. Serving makes no model request and needs no model credentials.
 Stdout is reserved for MCP. Human questions use provide_input through your MCP client.
 `;
 
@@ -138,4 +139,11 @@ const isEntrypoint = (path: string | undefined) => {
   }
 };
 
-if (isEntrypoint(process.argv[1])) startMcpCli();
+if (isEntrypoint(process.argv[1])) {
+  try {
+    startMcpCli(process.argv.slice(2), modelProvidersFromEnv());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "Pomerado MCP failed."}\n`);
+    process.exitCode = 1;
+  }
+}

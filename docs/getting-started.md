@@ -230,6 +230,25 @@ node --input-type=module -e 'import { chromium } from "playwright"; const server
 
 Pomerado owns its browser context on an attached server. Closing a job closes that context and leaves the server and other clients' contexts alone. A failed browser transport is dropped without replaying the request.
 
+## Use a ChatGPT subscription instead of an API key
+
+Pomerado can send its model calls through the ChatGPT login that the Codex CLI keeps, instead of `OPENAI_API_KEY`. This is opt-in, and the API key route stays the default.
+
+```sh
+codex login            # once, with your ChatGPT account
+export POMERADO_MODEL_TRANSPORT=chatgpt-subscription
+```
+
+- Pomerado reads `$CODEX_HOME/auth.json`, or `~/.codex/auth.json`, and never writes it. It fails closed when the file is missing, is not a ChatGPT login, or lacks a token.
+- The minter, Guardian and outcome reviewer all use the login. Your subscription's usage limits apply, and a spent limit ends the mint as exhausted quota instead of retrying.
+- Tokens never reach logs or error messages.
+- By default Pomerado only reads the login again when its token is near expiry or refused, so the Codex CLI stays the one that refreshes it. Run `codex` once to refresh a stale login.
+- `POMERADO_CHATGPT_REFRESH=private` lets Pomerado refresh the login itself, into `~/.pomerado/chatgpt-auth.json` (mode 0600). Refresh tokens rotate, so this can sign the Codex CLI out until you run `codex login` again.
+- `POMERADO_CODEX_MODEL_MAP` takes a JSON object that maps the model names Pomerado asks for to the names to send.
+- `POMERADO_CODEX_RESIDENCY` sets a data residency requirement, such as `us`, for workspaces that enforce one.
+- The subscription backend takes fewer request options than the API. Pomerado moves its instructions back to the top-level `instructions` field, sends `store: false`, drops prompt cache breakpoints and options, and skips cache prewarm requests.
+- For an MCP client, forward `POMERADO_MODEL_TRANSPORT` (and `CODEX_HOME`, if you set it) the same way as `OPENAI_API_KEY` above.
+
 ## Troubleshooting
 
 - A mint ends with `"build": "incomplete"` and the summary "Minting stopped before publication". One cause is a server without `OPENAI_API_KEY`, which ends the mint this way within seconds. Check [Client settings](#client-settings) for your client.
