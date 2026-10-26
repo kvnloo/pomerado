@@ -386,6 +386,31 @@ describe("chatgpt subscription transport", () => {
     expect(Reflect.get(Object(failed), "code")).toBe("server_error");
   });
 
+  it.each([
+    { type: "response.failed", code: "usage_limit_reached", status: 429, expectedCode: "insufficient_quota" },
+    { type: "error", code: "rate_limit_exceeded", status: 429, expectedCode: "rate_limit_exceeded" },
+    { type: "response.error", code: "invalid_request_error", status: 400, expectedCode: "invalid_request_error" },
+  ].flatMap((failure) => [false, true].map((stream) => ({ ...failure, stream }))))("preserves $type failure metadata (stream=$stream)", async ({ type, code, status, expectedCode, stream }) => {
+    const token = freshToken("stream-error");
+    const authPath = await writeAuth(token);
+    const failure = { code, message: `rejected ${token}` };
+    const attempts = !stream && code === "rate_limit_exceeded" ? 3 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++)
+      replies.push(() => ({ status: 200, body: sse({ type, response: { error: failure }, ...failure }) }));
+    const provider = chatgptSubscriptionProvider({ authPath, baseUrl: base });
+    const error = await (async () => {
+      if (!stream) return run(provider);
+      const result = await new Runner({ modelProvider: provider, tracingDisabled: true }).run(
+        new Agent({ name: "stream error probe", model: "test-model" }), "ping", { stream: true, maxTurns: 1 },
+      );
+      // Observe both promises so a failed stream never leaves an unhandled rejection.
+      await Promise.all([result.completed, (async () => { for await (const _event of result) { /* drain */ } })()]);
+    })().catch((error: unknown) => error);
+    expect(error).toMatchObject({ status, code: expectedCode, name: "Error" });
+    expect(error instanceof Error && error.message).not.toContain(token);
+    expect(recorded).toHaveLength(attempts);
+  });
+
   it("reports a spent subscription limit as exhausted quota, without retrying", async () => {
     const authPath = await writeAuth(freshToken("a"));
     replies.push(() => ({

@@ -484,10 +484,20 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Reco
   if (event !== undefined) yield event;
 }
 
-/** Patch arguments arrive incrementally; expose an executable native item only when complete. */
-async function* patchEvents(body: ReadableStream<Uint8Array>) {
+/** Patch arguments arrive incrementally; expose an executable native item only when complete.
+ * Failed terminal events become SDK API errors before its stream converter loses their codes.
+ */
+async function* patchEvents(body: ReadableStream<Uint8Array>, secrets: readonly (string | undefined)[], translatePatches: boolean) {
   const patchIds = new Set<unknown>();
   for await (const event of sseEvents(body)) {
+    if (event["type"] === "response.failed" || event["type"] === "response.error" || event["type"] === "error") {
+      const response = event["response"];
+      const error = isRecord(response) && isRecord(response["error"]) ? response["error"]
+        : isRecord(event["error"]) ? event["error"] : event;
+      const failure = mappedFailure(failedStatus(stringField(error, "code") ?? stringField(error, "type")), JSON.stringify(error), secrets);
+      throw OpenAI.APIError.generate(failure.status, await failure.json(), undefined, failure.headers);
+    }
+    if (!translatePatches) { yield event; continue; }
     const item = event["item"];
     if (isRecord(item) && item["type"] === "function_call" && item["name"] === "apply_patch") {
       patchIds.add(item["id"]);
@@ -506,8 +516,8 @@ async function* patchEvents(body: ReadableStream<Uint8Array>) {
   }
 }
 
-const translatedPatchStream = (body: ReadableStream<Uint8Array>) => {
-  const events = patchEvents(body);
+const translatedPatchStream = (body: ReadableStream<Uint8Array>, secrets: readonly (string | undefined)[], translatePatches: boolean) => {
+  const events = patchEvents(body, secrets, translatePatches);
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -536,9 +546,10 @@ const collectStream = async (
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    if (type === "response.failed" || type === "error") {
+    if (type === "response.failed" || type === "response.error" || type === "error") {
       const response = event["response"];
-      const error = isRecord(response) && isRecord(response["error"]) ? response["error"] : event;
+      const error = isRecord(response) && isRecord(response["error"]) ? response["error"]
+        : isRecord(event["error"]) ? event["error"] : event;
       const code = stringField(error, "code");
       const errorType = stringField(error, "type");
       return errorResponse(failedStatus(code ?? errorType), {
@@ -677,9 +688,9 @@ const makeChatgptFetch = (
     }
     if (!response.ok) return mappedFailure(response.status, await response.text(), tokens.secrets());
     if (!isResponses || response.body === null) return response;
-    if (wantsStream) return translatePatches
-      ? new Response(translatedPatchStream(response.body), { status: response.status, headers: response.headers })
-      : response;
+    if (wantsStream) return new Response(translatedPatchStream(response.body, tokens.secrets(), translatePatches), {
+      status: response.status, headers: response.headers,
+    });
     return collectStream(response.body, tokens.secrets(), translatePatches);
   };
 
