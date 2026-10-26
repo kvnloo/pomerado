@@ -408,6 +408,7 @@ The package has these entry points.
 | `typescript/src/inputs/` | Input validation, terminal collection and per-session secrets |
 | `typescript/src/execution/` | Local workspaces, child processes and native Playwright adapter |
 | `typescript/src/standalone/` | Local library, terminal and MCP composition |
+| `typescript/src/models/` | Model IDs, request settings, failure classification and the opt-in ChatGPT subscription transport |
 | `typescript/src/hosted-features.ts` | Features another host supplies that the local minter ignores and its Guardian doesn't count on |
 | `typescript/src/mcp/schema.ts` | Pure schema adapter shared with the production MCP |
 | `typescript/authoring/` | Shared prompts and examples, with sections a host can replace |
