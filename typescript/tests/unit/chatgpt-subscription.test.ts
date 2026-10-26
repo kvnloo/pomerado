@@ -4,7 +4,8 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, Runner } from "@openai/agents";
+import { Agent, Runner, applyPatchTool } from "@openai/agents";
+import patchFixture from "./fixtures/chatgpt-apply-patch.json" with { type: "json" };
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ChatgptSubscriptionAuthError,
@@ -14,6 +15,7 @@ import {
   redactSecrets,
   toCodexRequest,
 } from "../../src/models/chatgpt-subscription.js";
+import { nativePatchItem } from "../../src/models/chatgpt-patch.js";
 import { prewarmInstructions } from "../../src/models/cached-instructions.js";
 import { providerQuotaExhausted } from "../../src/models/provider-quota.js";
 
@@ -119,6 +121,98 @@ const run = async (provider: ReturnType<typeof chatgptSubscriptionProvider>, ins
 };
 
 describe("chatgpt subscription transport", () => {
+  it.each([false, true])("executes a native patch through the function-only backend and replays its result (stream=%s)", async (stream) => {
+    const authPath = await writeAuth(freshToken("patch"));
+    const executed: unknown[] = [];
+    replies.push((request) => {
+      const tools = request.body["tools"];
+      if (Array.isArray(tools) && tools.some((tool) => tool.type === "apply_patch"))
+        return { status: 400, body: JSON.stringify(patchFixture.rejection), type: "application/json" };
+      expect(tools).toContainEqual(expect.objectContaining({ type: "function", name: "apply_patch" }));
+      return {
+        status: 200,
+        body: sse(
+          { type: "response.created", response: { id: "resp_1" } },
+          { type: "response.output_item.added", output_index: 0, item: { ...patchFixture.call, arguments: "", status: "in_progress" } },
+          { type: "response.function_call_arguments.delta", item_id: patchFixture.call.id, output_index: 0, delta: patchFixture.call.arguments },
+          { type: "response.function_call_arguments.done", item_id: patchFixture.call.id, output_index: 0, arguments: patchFixture.call.arguments },
+          { type: "response.output_item.done", output_index: 0, item: patchFixture.call },
+          { type: "response.completed", response: { ...completed(""), output: [patchFixture.call] } },
+        ),
+      };
+    });
+    replies.push((request) => {
+      expect(request.body["input"]).toContainEqual(patchFixture.functionOutput);
+      expect(request.body["input"]).toContainEqual({
+        ...patchFixture.call, id: undefined,
+      });
+      return okText(request);
+    });
+    const provider = chatgptSubscriptionProvider({ authPath, baseUrl: base });
+    const runner = new Runner({ modelProvider: provider, tracingDisabled: true });
+    const agent = new Agent({
+      name: "patch probe", model: "test-model", instructions: "Create a file.",
+      tools: [applyPatchTool({ editor: {
+        createFile: async (operation) => { executed.push(operation); return { output: "created" }; },
+        updateFile: async () => { throw new Error("Unexpected update"); },
+        deleteFile: async () => { throw new Error("Unexpected delete"); },
+      } })],
+    });
+    const result = stream
+      ? await runner.run(agent, "Create probe.txt", { maxTurns: 2, stream: true })
+      : await runner.run(agent, "Create probe.txt", { maxTurns: 2 });
+    const patchEvents: unknown[] = [];
+    if ("completed" in result) {
+      for await (const event of result) {
+        if (event.type === "raw_model_stream_event" && event.data.type === "model")
+          patchEvents.push(event.data.event);
+      }
+      await result.completed;
+      expect(patchEvents).toContainEqual(expect.objectContaining({
+        type: "response.output_item.done", item: patchFixture.nativeCall,
+      }));
+      expect(patchEvents).not.toContainEqual(expect.objectContaining({ type: "response.function_call_arguments.delta" }));
+    }
+    expect(result.finalOutput).toBe("pong");
+    expect(executed).toEqual([patchFixture.operation]);
+    expect(result.rawResponses[0]?.output[0]).toMatchObject({
+      type: "apply_patch_call", callId: "call_patch_1", operation: patchFixture.operation,
+    });
+    expect(recorded).toHaveLength(2);
+  });
+
+  it.each([
+    { type: "create_file", path: "new.txt", diff: "+new\n" },
+    { type: "update_file", path: "old.txt", diff: "@@\n-old\n+new\n" },
+    { type: "update_file", path: "old.txt", diff: "@@\n-old\n+new\n", move_to: "new.txt" },
+    { type: "delete_file", path: "old.txt" },
+  ])("round trips the patch operation $type", (operation) => {
+    const native = { ...patchFixture.nativeCall, operation };
+    const body = toCodexRequest({
+      input: [native, { ...patchFixture.nativeOutput, status: "failed", output: "not applied" }],
+      tools: [patchFixture.tool], tool_choice: { type: "apply_patch" },
+    });
+    expect(body["tool_choice"]).toEqual({ type: "function", name: "apply_patch" });
+    expect(body["input"]).toEqual([
+      { type: "function_call", name: "apply_patch", call_id: "call_patch_1", status: "completed", arguments: JSON.stringify({ operation }) },
+      { type: "function_call_output", call_id: "call_patch_1", output: JSON.stringify({ status: "failed", output: "not applied" }) },
+    ]);
+    expect(nativePatchItem({ ...patchFixture.call, arguments: JSON.stringify({ operation }) })).toEqual(native);
+    if ("move_to" in operation)
+      expect(JSON.stringify(toCodexRequest({ tools: [patchFixture.tool] })["tools"])).toContain("move_to");
+  });
+
+  it.each(["not json", "{}", '{"operation":{"type":"update_file","path":"x"}}'])("rejects malformed patch arguments: %s", (args) => {
+    expect(() => nativePatchItem({ ...patchFixture.call, arguments: args })).toThrow(/apply_patch/);
+  });
+
+  it("keeps ordinary function calls unchanged", () => {
+    const call = { ...patchFixture.call, name: "lookup" };
+    expect(nativePatchItem(call)).toBe(call);
+    expect(toCodexRequest({ input: [call], tools: [{ type: "function", name: "apply_patch", parameters: {} }] })["tools"])
+      .toEqual([{ type: "function", name: "apply_patch", parameters: {} }]);
+  });
+
   it("signs a non-streamed call, reshapes its body and returns the streamed final response", async () => {
     const token = freshToken("a");
     const authPath = await writeAuth(token);

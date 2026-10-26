@@ -1,0 +1,33 @@
+{
+  "note": "The rejection is the reported backend response. Request and successful response items are synthetic protocol fixtures, not live captures.",
+  "rejection": { "detail": "Unsupported tool type: apply_patch" },
+  "tool": { "type": "apply_patch" },
+  "operation": { "type": "create_file", "path": "probe.txt", "diff": "+hello\n" },
+  "call": {
+    "type": "function_call",
+    "id": "fc_patch_1",
+    "call_id": "call_patch_1",
+    "name": "apply_patch",
+    "arguments": "{\"operation\":{\"type\":\"create_file\",\"path\":\"probe.txt\",\"diff\":\"+hello\\n\"}}",
+    "status": "completed"
+  },
+  "nativeCall": {
+    "type": "apply_patch_call",
+    "id": "fc_patch_1",
+    "call_id": "call_patch_1",
+    "status": "completed",
+    "operation": { "type": "create_file", "path": "probe.txt", "diff": "+hello\n" }
+  },
+  "nativeOutput": {
+    "type": "apply_patch_call_output",
+    "id": "apco_1",
+    "call_id": "call_patch_1",
+    "status": "completed",
+    "output": "created"
+  },
+  "functionOutput": {
+    "type": "function_call_output",
+    "call_id": "call_patch_1",
+    "output": "{\"status\":\"completed\",\"output\":\"created\"}"
+  }
+}

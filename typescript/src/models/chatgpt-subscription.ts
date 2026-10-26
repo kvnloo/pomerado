@@ -25,6 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { OpenAIProvider, type ModelProvider } from "@openai/agents";
 import OpenAI from "openai";
+import { codexPatchInput, codexPatchTool, nativePatchItem, nativePatchResponse } from "./chatgpt-patch.js";
 
 /** The value of `POMERADO_MODEL_TRANSPORT` that selects this transport. */
 export const chatgptSubscriptionTransport = "chatgpt-subscription";
@@ -370,7 +371,12 @@ export const toCodexRequest = (
     instructions = hoisted.join("\n\n");
   }
   out["instructions"] = instructions.trim() === "" ? defaultInstructions : instructions;
-  out["input"] = input.map(withoutBreakpoints);
+  out["input"] = input.map(codexPatchInput).map(withoutBreakpoints);
+  if (Array.isArray(body["tools"]))
+    out["tools"] = body["tools"].map((tool) =>
+      isRecord(tool) && tool["type"] === "apply_patch" ? codexPatchTool : tool);
+  if (isRecord(body["tool_choice"]) && body["tool_choice"]["type"] === "apply_patch")
+    out["tool_choice"] = { type: "function", name: "apply_patch" };
   out["store"] = false;
   out["stream"] = true;
   if (isRecord(body["reasoning"])) {
@@ -475,15 +481,55 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Reco
   if (event !== undefined) yield event;
 }
 
+/** Patch arguments arrive incrementally; expose an executable native item only when complete. */
+async function* patchEvents(body: ReadableStream<Uint8Array>) {
+  const patchIds = new Set<unknown>();
+  for await (const event of sseEvents(body)) {
+    const item = event["item"];
+    if (isRecord(item) && item["type"] === "function_call" && item["name"] === "apply_patch") {
+      patchIds.add(item["id"]);
+      if (event["type"] === "response.output_item.added") continue;
+      const native = nativePatchItem(item);
+      yield { ...event, type: "response.output_item.added", item: native };
+      yield { ...event, item: native };
+    } else if (typeof event["type"] === "string" && event["type"].startsWith("response.function_call_arguments.") &&
+        patchIds.has(event["item_id"])) {
+      continue;
+    } else if ("response" in event) {
+      yield { ...event, response: nativePatchResponse(event["response"]) };
+    } else {
+      yield event;
+    }
+  }
+}
+
+const translatedPatchStream = (body: ReadableStream<Uint8Array>) => {
+  const events = patchEvents(body);
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await events.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(`event: ${String(next.value["type"])}\ndata: ${JSON.stringify(next.value)}\n\n`));
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() { await events.return(); },
+  });
+};
+
 /** Reads a streamed response to its end and answers as the non-streamed Responses API would. */
 const collectStream = async (
   body: ReadableStream<Uint8Array>,
   secrets: readonly (string | undefined)[],
+  translatePatches: boolean,
 ): Promise<Response> => {
   for await (const event of sseEvents(body)) {
     const type = event["type"];
     if (type === "response.completed" || type === "response.incomplete")
-      return new Response(JSON.stringify(event["response"]), {
+      return new Response(JSON.stringify(translatePatches ? nativePatchResponse(event["response"]) : event["response"]), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -543,11 +589,14 @@ const makeChatgptFetch = (
     const headers = new Headers(init?.headers);
     let body = init?.body;
     let wantsStream = true;
+    let translatePatches = false;
     const isResponses = new URL(url).pathname.endsWith("/responses");
     if (typeof body === "string" && isResponses) {
       const parsed: unknown = JSON.parse(body);
       if (isRecord(parsed)) {
         wantsStream = parsed["stream"] === true;
+        translatePatches = Array.isArray(parsed["tools"]) && parsed["tools"].some((tool) =>
+          isRecord(tool) && tool["type"] === "apply_patch");
         if (isPrewarm(parsed)) {
           const skipped = skippedPrewarm(parsed);
           return wantsStream
@@ -615,8 +664,11 @@ const makeChatgptFetch = (
       response = await signedSend(login);
     }
     if (!response.ok) return mappedFailure(response.status, await response.text(), tokens.secrets());
-    if (!isResponses || wantsStream || response.body === null) return response;
-    return collectStream(response.body, tokens.secrets());
+    if (!isResponses || response.body === null) return response;
+    if (wantsStream) return translatePatches
+      ? new Response(translatedPatchStream(response.body), { status: response.status, headers: response.headers })
+      : response;
+    return collectStream(response.body, tokens.secrets(), translatePatches);
   };
 
 /**
