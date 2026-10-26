@@ -328,7 +328,9 @@ const contentText = (content: unknown): string | undefined => {
 /** An item's content parts without cache breakpoints, which the backend does not take. */
 const withoutBreakpoints = (item: unknown): unknown => {
   if (!isRecord(item)) return item;
-  const { id: _id, ...rest } = item;
+  if (item["type"] === "compaction")
+    return { type: "compaction", encrypted_content: item["encrypted_content"] };
+  const { id: _id, prompt_cache_breakpoint: _breakpoint, ...rest } = item;
   if (!Array.isArray(rest["content"])) return rest;
   return {
     ...rest,
@@ -380,8 +382,9 @@ export const toCodexRequest = (
   out["store"] = false;
   out["stream"] = true;
   if (isRecord(body["reasoning"])) {
-    const { context: _context, ...reasoning } = body["reasoning"];
-    out["reasoning"] = reasoning;
+    out["reasoning"] = Object.fromEntries(
+      Object.entries(body["reasoning"]).filter(([key]) => key === "effort" || key === "summary"),
+    );
   }
   const model = body["model"];
   if (typeof model === "string") out["model"] = modelMap[model] ?? model;
@@ -609,6 +612,15 @@ const makeChatgptFetch = (
                 headers: { "content-type": "application/json" },
               });
         }
+        // Never drop a checkpoint or pretend a compaction trigger succeeded: the minter
+        // can disable its optional background compaction when this route refuses it.
+        const unsupported = Array.isArray(parsed["input"]) && parsed["input"].find((item) =>
+          isRecord(item) && (item["type"] === "compaction_trigger" || item["type"] === "item_reference"));
+        if (isRecord(unsupported))
+          return errorResponse(400, {
+            message: `The subscription transport does not support ${String(unsupported["type"])}; send full history and inline items.`,
+            code: "unsupported_input_item", type: "invalid_request_error",
+          }, true);
         body = JSON.stringify(toCodexRequest(parsed, options.modelMap));
       }
     }

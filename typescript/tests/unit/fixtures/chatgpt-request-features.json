@@ -1,0 +1,29 @@
+{
+  "request": {
+    "model": "test-model",
+    "instructions": "Preserve history.",
+    "input": [
+      {"type": "message", "id": "msg_old", "role": "user", "prompt_cache_breakpoint": {}, "content": [{"type": "input_text", "text": "hello", "prompt_cache_breakpoint": {}}]},
+      {"type": "compaction", "id": "cmp_old", "encrypted_content": "synthetic-checkpoint", "status": "completed"}
+    ],
+    "providerData": {"prompt_cache_options": {"mode": "explicit"}},
+    "prompt_cache_options": {"mode": "explicit"},
+    "reasoning": {"effort": "low", "summary": "auto", "context": "all_turns", "future_option": true},
+    "context_management": [{"type": "compaction", "compact_threshold": 268000}],
+    "store": true,
+    "previous_response_id": "resp_old",
+    "unknown_future_option": true
+  },
+  "expected": {
+    "model": "test-model",
+    "instructions": "Preserve history.",
+    "input": [
+      {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+      {"type": "compaction", "encrypted_content": "synthetic-checkpoint"}
+    ],
+    "reasoning": {"effort": "low", "summary": "auto"},
+    "context_management": [{"type": "compaction", "compact_threshold": 268000}],
+    "store": false,
+    "stream": true
+  }
+}

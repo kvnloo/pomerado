@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, Runner, applyPatchTool } from "@openai/agents";
 import patchFixture from "./fixtures/chatgpt-apply-patch.json" with { type: "json" };
+import featuresFixture from "./fixtures/chatgpt-request-features.json" with { type: "json" };
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ChatgptSubscriptionAuthError,
@@ -121,6 +122,31 @@ const run = async (provider: ReturnType<typeof chatgptSubscriptionProvider>, ins
 };
 
 describe("chatgpt subscription transport", () => {
+  it("allow-lists request features and replays opaque compaction checkpoints without stored IDs", () => {
+    expect(toCodexRequest(featuresFixture.request)).toEqual(featuresFixture.expected);
+  });
+
+  it.each(["compaction_trigger", "item_reference"])("rejects unsupported %s locally with typed error metadata", async (type) => {
+    const authPath = await writeAuth(freshToken("unsupported"));
+    const provider = chatgptSubscriptionProvider({ authPath, baseUrl: base });
+    const error = await new Runner({ modelProvider: provider, tracingDisabled: true }).run(
+      new Agent({ name: "unsupported probe", model: "test-model" }),
+      [{ type: "unknown", providerData: { type, id: "unavailable_item" } }],
+      { maxTurns: 1 },
+    ).catch((error: unknown) => error);
+    expect(error).toMatchObject({ status: 400, code: "unsupported_input_item", name: "Error" });
+    expect(recorded).toHaveLength(0);
+  });
+
+  it("keeps HTTP rejection status, code and SDK error name", async () => {
+    const authPath = await writeAuth(freshToken("rejected"));
+    replies.push(() => ({ status: 400, body: JSON.stringify({ error: {
+      message: patchFixture.rejection.detail, code: "unsupported_tool_type", type: "invalid_request_error",
+    } }), type: "application/json" }));
+    const error = await run(chatgptSubscriptionProvider({ authPath, baseUrl: base })).catch((error: unknown) => error);
+    expect(error).toMatchObject({ status: 400, code: "unsupported_tool_type", name: "Error" });
+    expect(recorded).toHaveLength(1);
+  });
   it.each([false, true])("executes a native patch through the function-only backend and replays its result (stream=%s)", async (stream) => {
     const authPath = await writeAuth(freshToken("patch"));
     const executed: unknown[] = [];
