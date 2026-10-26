@@ -247,6 +247,9 @@ export POMERADO_MODEL_TRANSPORT=chatgpt-subscription
 - `POMERADO_CODEX_MODEL_MAP` takes a JSON object that maps the model names Pomerado asks for to the names to send.
 - `POMERADO_CODEX_RESIDENCY` sets a data residency requirement, such as `us`, for workspaces that enforce one.
 - The subscription backend takes fewer request options than the API. Pomerado moves its instructions back to the top-level `instructions` field, sends `store: false`, drops prompt cache breakpoints and options, and skips cache prewarm requests.
+- Native `apply_patch` tools travel as function tools. The transport converts their calls and results back to the SDK's native patch protocol, so the minter's editor is unchanged.
+- The transport keeps only `effort` and `summary` in reasoning options; `context: "all_turns"` is not sent. It strips input item IDs but keeps call IDs for tool-result correlation.
+- Encrypted compaction checkpoints are replayed inline without stored IDs or output-only fields. The transport rejects `compaction_trigger` and stored `item_reference` inputs locally with HTTP 400 and code `unsupported_input_item`. A refused background compaction disables that optimization; the minter keeps its full history. Normal server-side `context_management` directives are forwarded, but their availability still depends on the selected backend/model.
 - For an MCP client, forward `POMERADO_MODEL_TRANSPORT` (and `CODEX_HOME`, if you set it) the same way as `OPENAI_API_KEY` above.
 
 ## Troubleshooting
